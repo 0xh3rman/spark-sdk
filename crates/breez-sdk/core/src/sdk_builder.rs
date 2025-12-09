@@ -35,7 +35,9 @@ use crate::{
 #[derive(Clone)]
 pub struct SdkBuilder {
     config: Config,
-    seed: Seed,
+    seed: Option<Seed>,
+    signer: Option<Arc<dyn Signer>>,
+    identity_master_key: Option<Xpriv>,
     storage_dir: Option<String>,
     storage: Option<Arc<dyn Storage>>,
     chain_service: Option<Arc<dyn BitcoinChainService>>,
@@ -50,14 +52,16 @@ pub struct SdkBuilder {
 }
 
 impl SdkBuilder {
-    /// Creates a new `SdkBuilder` with the provided configuration.
+    /// Creates a new `SdkBuilder` with the provided configuration and seed.
     /// Arguments:
     /// - `config`: The configuration to be used.
     /// - `seed`: The seed for wallet generation.
     pub fn new(config: Config, seed: Seed) -> Self {
         SdkBuilder {
             config,
-            seed,
+            seed: Some(seed),
+            signer: None,
+            identity_master_key: None,
             storage_dir: None,
             storage: None,
             chain_service: None,
@@ -70,6 +74,51 @@ impl SdkBuilder {
             account_number: None,
             sync_storage: None,
         }
+    }
+
+    /// Creates a new `SdkBuilder` with an external signer.
+    ///
+    /// Use this constructor when you want to manage keys externally (e.g., in a secure enclave
+    /// or hardware wallet) instead of deriving them from a seed.
+    ///
+    /// **Note**: When using an external signer:
+    /// - Real-time sync is disabled (requires master key derivation)
+    /// - Nostr client is disabled unless `identity_master_key` is provided via [`with_identity_master_key`]
+    ///
+    /// Arguments:
+    /// - `config`: The configuration to be used.
+    /// - `signer`: The external signer implementation.
+    pub fn new_with_signer(config: Config, signer: Arc<dyn Signer>) -> Self {
+        SdkBuilder {
+            config,
+            seed: None,
+            signer: Some(signer),
+            identity_master_key: None,
+            storage_dir: None,
+            storage: None,
+            chain_service: None,
+            fiat_service: None,
+            lnurl_client: None,
+            lnurl_server_client: None,
+            payment_observer: None,
+            key_set_type: KeySetType::Default,
+            use_address_index: false,
+            account_number: None,
+            sync_storage: None,
+        }
+    }
+
+    /// Sets the identity master key for real-time sync and Nostr client.
+    ///
+    /// This is only needed when using an external signer and you want to enable:
+    /// - Real-time sync (multi-device payment metadata sync)
+    /// - Nostr client functionality
+    ///
+    /// When using `new()` with a seed, this is derived automatically.
+    #[must_use]
+    pub fn with_identity_master_key(mut self, master_key: Xpriv) -> Self {
+        self.identity_master_key = Some(master_key);
+        self
     }
 
     #[must_use]
@@ -189,17 +238,31 @@ impl SdkBuilder {
     /// Builds the `BreezSdk` instance with the configured components.
     #[allow(clippy::too_many_lines)]
     pub async fn build(self) -> Result<BreezSdk, SdkError> {
-        // Create the signer from seed
-        let seed_bytes = self.seed.to_bytes()?;
-        let key_set = KeySet::new(
-            &seed_bytes,
-            self.config.network.into(),
-            self.key_set_type.into(),
-            self.use_address_index,
-            self.account_number,
-        )
-        .map_err(|e| SdkError::Generic(e.to_string()))?;
-        let signer: Arc<dyn Signer> = Arc::new(DefaultSigner::from_key_set(key_set.clone()));
+        // Create signer and key_set based on configuration
+        let (signer, key_set): (Arc<dyn Signer>, Option<KeySet>) = match (&self.signer, &self.seed) {
+            // External signer provided
+            (Some(signer), _) => (Arc::clone(signer), None),
+            // Seed provided - derive signer from seed
+            (None, Some(seed)) => {
+                let seed_bytes = seed.to_bytes()?;
+                let key_set = KeySet::new(
+                    &seed_bytes,
+                    self.config.network.into(),
+                    self.key_set_type.into(),
+                    self.use_address_index,
+                    self.account_number,
+                )
+                .map_err(|e| SdkError::Generic(e.to_string()))?;
+                let signer: Arc<dyn Signer> = Arc::new(DefaultSigner::from_key_set(key_set.clone()));
+                (signer, Some(key_set))
+            }
+            // Neither provided - error
+            (None, None) => {
+                return Err(SdkError::Generic(
+                    "Either seed or signer must be provided to build the SDK".to_string(),
+                ));
+            }
+        };
 
         let chain_service = if let Some(service) = self.chain_service {
             service
@@ -321,48 +384,72 @@ impl SdkBuilder {
         };
         let shutdown_sender = watch::channel::<()>(()).0;
 
-        let event_emitter = Arc::new(EventEmitter::new(
-            self.config.real_time_sync_server_url.is_some(),
-        ));
-        let storage = if let Some(server_url) = &self.config.real_time_sync_server_url {
-            let Some(sync_storage) = sync_storage else {
+        // Determine the identity master key for real-time sync and nostr
+        // Priority: 1) explicitly provided, 2) derived from seed via key_set
+        let identity_master_key: Option<Xpriv> = match (&self.identity_master_key, &key_set, &self.seed) {
+            // Explicitly provided master key
+            (Some(master_key), _, _) => Some(master_key.clone()),
+            // Derived from seed - use legacy derivation for backwards compatibility
+            (None, Some(_), Some(seed)) if self.key_set_type == KeySetType::Default && self.account_number.is_none() => {
+                let seed_bytes = seed.to_bytes()?;
+                let bitcoin_network: bitcoin::Network = self.config.network.into();
+                Some(Xpriv::new_master(bitcoin_network, &seed_bytes)
+                    .map_err(|e| SdkError::Generic(e.to_string()))?)
+            }
+            // Derived from key_set
+            (None, Some(ks), _) => Some(ks.identity_master_key.clone()),
+            // External signer without master key - features requiring master key are disabled
+            (None, None, _) => {
+                info!("External signer without identity_master_key: real-time sync and nostr will be disabled");
+                None
+            }
+        };
+
+        // Determine if real-time sync can be enabled
+        let has_real_time_sync = self.config.real_time_sync_server_url.is_some() && identity_master_key.is_some();
+        let event_emitter = Arc::new(EventEmitter::new(has_real_time_sync));
+
+        let storage = match (&self.config.real_time_sync_server_url, &identity_master_key, sync_storage) {
+            // Real-time sync enabled and we have master key
+            (Some(server_url), Some(master_key), Some(sync_storage)) => {
+                init_and_start_real_time_sync(RealTimeSyncParams {
+                    server_url: server_url.clone(),
+                    api_key: self.config.api_key.clone(),
+                    network: self.config.network,
+                    master_key: master_key.clone(),
+                    storage: Arc::clone(&storage),
+                    sync_storage,
+                    shutdown_receiver: shutdown_sender.subscribe(),
+                    event_emitter: Arc::clone(&event_emitter),
+                })
+                .await?
+            }
+            // Real-time sync URL configured but no master key (external signer)
+            (Some(_), None, _) => {
+                info!("Real-time sync disabled: external signer without identity_master_key");
+                storage
+            }
+            // Real-time sync URL configured but no sync storage
+            (Some(_), Some(_), None) => {
                 return Err(SdkError::Generic(
                     "Real-time sync is enabled, but no sync storage is supplied".to_string(),
                 ));
-            };
-
-            // Use legacy master key when using default key set and default derivation path for backwards compatibility
-            let master_key =
-                if self.key_set_type == KeySetType::Default && self.account_number.is_none() {
-                    let bitcoin_network: bitcoin::Network = self.config.network.into();
-                    Xpriv::new_master(bitcoin_network, &seed_bytes)
-                        .map_err(|e| SdkError::Generic(e.to_string()))?
-                } else {
-                    key_set.identity_master_key
-                };
-
-            init_and_start_real_time_sync(RealTimeSyncParams {
-                server_url: server_url.clone(),
-                api_key: self.config.api_key.clone(),
-                network: self.config.network,
-                master_key,
-                storage: Arc::clone(&storage),
-                sync_storage,
-                shutdown_receiver: shutdown_sender.subscribe(),
-                event_emitter: Arc::clone(&event_emitter),
-            })
-            .await?
-        } else {
-            storage
+            }
+            // No real-time sync configured
+            _ => storage,
         };
 
-        let nostr_client = Arc::new(NostrClient::new(
-            &key_set.identity_master_key,
-            self.account_number.unwrap_or(match self.config.network {
-                Network::Mainnet => 0,
-                Network::Regtest => 1,
-            }),
-        )?);
+        // Create nostr client if we have the master key
+        let nostr_client: Option<Arc<NostrClient>> = match identity_master_key {
+            Some(ref master_key) => {
+                let account = self.account_number.unwrap_or(match self.config.network {
+                    Network::Mainnet => 0,
+                    Network::Regtest => 1,
+                });
+                Some(Arc::new(NostrClient::new(master_key, account)?))
+            }
+            None => None,
+        };
 
         // Create the SDK instance
         let sdk = BreezSdk::init_and_start(BreezSdkParams {
