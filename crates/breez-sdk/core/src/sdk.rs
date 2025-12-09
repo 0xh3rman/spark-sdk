@@ -171,7 +171,8 @@ pub struct BreezSdk {
     initial_synced_watcher: watch::Receiver<bool>,
     external_input_parsers: Vec<ExternalInputParser>,
     spark_private_mode_initialized: Arc<OnceCell<()>>,
-    nostr_client: Arc<NostrClient>,
+    /// Nostr client for zap receipts. None when using external signer without identity_master_key.
+    nostr_client: Option<Arc<NostrClient>>,
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
@@ -231,7 +232,8 @@ pub(crate) struct BreezSdkParams {
     pub shutdown_sender: watch::Sender<()>,
     pub spark_wallet: Arc<SparkWallet>,
     pub event_emitter: Arc<EventEmitter>,
-    pub nostr_client: Arc<NostrClient>,
+    /// Nostr client for zap receipts. Optional - when None, zap functionality is disabled.
+    pub nostr_client: Option<Arc<NostrClient>>,
 }
 
 impl BreezSdk {
@@ -343,6 +345,9 @@ impl BreezSdk {
         let Some(lnurl_server_client) = self.lnurl_server_client.clone() else {
             return Ok(());
         };
+        let Some(nostr_client) = self.nostr_client.clone() else {
+            return Ok(());
+        };
 
         let mut offset = 0;
         let limit = 100;
@@ -386,8 +391,7 @@ impl BreezSdk {
                 }
 
                 // Create the zap receipt using NostrClient
-                let zap_receipt = match self.nostr_client.create_zap_receipt(zap_request, &payment)
-                {
+                let zap_receipt = match nostr_client.create_zap_receipt(zap_request, &payment) {
                     Ok(receipt) => receipt,
                     Err(e) => {
                         error!(
@@ -2391,7 +2395,7 @@ impl BreezSdk {
         // Query settings directly from spark wallet to avoid recursion through get_user_settings()
         let spark_user_settings = self.spark_wallet.query_wallet_settings().await?;
         let nostr_pubkey = if spark_user_settings.private_enabled {
-            Some(self.nostr_client.nostr_pubkey())
+            self.nostr_client.as_ref().map(|c| c.nostr_pubkey())
         } else {
             None
         };
