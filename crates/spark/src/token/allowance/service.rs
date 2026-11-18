@@ -23,6 +23,7 @@ use crate::{
     },
     services::{ServiceError, TokenTransaction, TokenTransactionStatus},
     signer::{PrepareTokenTransactionRequest, SparkSigner, TokenTransactionKind},
+    spark_primitives,
     token::{
         ReservationTarget, TokenAllowanceFailure, TokenOutput, TokenOutputServiceError,
         TokenOutputWithPrevOut, TokensConfig, bech32m_decode_token_id, select_token_outputs_from,
@@ -506,6 +507,8 @@ fn pull_transaction(
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(feature = "tokens"), allow(unused))]
+
     use std::{cell::RefCell, future::ready};
 
     use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -523,6 +526,7 @@ mod tests {
             TokenOutputToSpend, TokenTransferInput, final_token_transaction,
         },
         services::{ServiceError, TokenInputs, TokenTransaction, TokenTransactionStatus},
+        spark_primitives,
         token::TokenAllowanceFailure,
     };
 
@@ -780,6 +784,7 @@ mod tests {
         assert_eq!(transaction.created_timestamp, SystemTime::UNIX_EPOCH);
     }
 
+    #[cfg(feature = "tokens")]
     #[test_all]
     fn a_finalized_broadcast_returns_the_final_pull() {
         let (transaction, final_hash) = mapped(CommitStatus::CommitFinalized);
@@ -791,6 +796,7 @@ mod tests {
         assert_carries_final_transaction(&transaction, &final_hash);
     }
 
+    #[cfg(feature = "tokens")]
     #[test_all]
     fn a_broadcast_that_is_not_final_returns_the_pending_pull() {
         for status in [

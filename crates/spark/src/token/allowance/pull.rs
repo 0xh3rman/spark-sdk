@@ -18,6 +18,7 @@ use crate::{
         },
     },
     services::ServiceError,
+    spark_primitives,
     token::{
         MAX_TOKEN_TX_OUTPUTS, TokenAllowance, TokenAllowanceFailure, TokenAllowanceStatus,
         TokenOutputWithPrevOut, TokensConfig, bech32m_decode_token_id, token_service::unix_micros,
@@ -305,6 +306,8 @@ pub(crate) fn build_pull_broadcast_request(
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(feature = "tokens"), allow(unused))]
+
     use std::time::Duration;
 
     use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -393,6 +396,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tokens")]
     #[test_all]
     fn builds_pull_with_change_to_payer() {
         let payer = key(1);
@@ -540,6 +544,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tokens")]
     #[test_all]
     fn broadcast_request_carries_allowance_signatures() {
         use bitcoin::secp256k1::{Keypair, Message};

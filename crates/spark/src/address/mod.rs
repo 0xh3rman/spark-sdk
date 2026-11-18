@@ -22,12 +22,12 @@ use bitcoin::{
 use bytes::BytesMut;
 use prost::{Message as ProstMessage, encoding};
 
-use error::AddressError;
-use platform_utils::time::{SystemTime, UNIX_EPOCH};
-use spark_primitives::{
+use crate::spark_primitives::{
     FinalizeTokenInvoiceRequest, PrepareTokenInvoiceRequest, PreparedTokenInvoice,
     finalize_token_invoice, prepare_token_invoice,
 };
+use error::AddressError;
+use platform_utils::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::Network;
@@ -617,6 +617,7 @@ fn encode_spark_address_canonical(address: &ProtoSparkAddress) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(feature = "tokens"), allow(unused))]
 
     use crate::signer::{SparkSignerAdapter, create_test_signer};
 
@@ -764,6 +765,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tokens")]
     #[test_all]
     fn test_parse_specific_token_invoice() {
         let invoice_str = "sparkrt1pgss8cf4gru7ece2ryn8ym3vm3yz8leeend2589m7svq2mgv0xncfyx8zfeqsqgjzqqe5pmtue38y3avl89vac53nkzj5prdv4kk7v3pqdur4y4c5nlcyr7lksm4mhrhdzakas9yt8gz4levtnfe49sgkqknywstprharhk8qcgvpz8vtudzvz3q5xy2yxnpacs2yl00fnajxylsljq9y0uesr6qylyxq2lxnum8r63pyqsraqdyp57uf363avdlv59eqjfdszpwc2y3zfpww2cevcx92zw40qxf5fedvrlmnrmsg7pa3egggtw03kd0rz73lvgl5u3c02krhhcwc3haec4q2e582x";
@@ -836,6 +838,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tokens")]
     #[async_test_all]
     async fn test_invoice_roundtrip() {
         let signer = std::sync::Arc::new(create_test_signer());
@@ -938,6 +941,7 @@ mod tests {
         assert_eq!(parsed_invoice_fields.memo, None);
     }
 
+    #[cfg(feature = "tokens")]
     #[async_test_all]
     async fn test_compare_addresses_with_and_without_invoice_fields() {
         let signer = std::sync::Arc::new(create_test_signer());
@@ -1177,6 +1181,7 @@ mod tests {
                 .unwrap()
         }
 
+        #[cfg(feature = "tokens")]
         #[test_all]
         fn compute_invoice_hash_matches_cross_language_fixtures() {
             let fixture: FixtureFile = serde_json::from_str(FIXTURE_JSON).unwrap();

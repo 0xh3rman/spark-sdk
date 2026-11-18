@@ -12,11 +12,16 @@ pub mod services;
 pub mod session_store;
 pub mod signer;
 pub mod silent_payment;
+#[cfg(not(feature = "tokens"))]
+#[allow(unused)]
+mod spark_primitives;
 pub mod ssp;
 pub mod token;
 pub mod tree;
 pub mod utils;
 
+#[cfg(feature = "tokens")]
+use ::spark_primitives;
 pub use core::Network;
 pub use frost_secp256k1_tr::Identifier;
 pub use token::{bech32m_decode_token_id, bech32m_encode_token_id};

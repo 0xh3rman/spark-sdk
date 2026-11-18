@@ -31,6 +31,7 @@ use crate::{
         TokenTransferInput, TransferObserver, TransferTokenOutput, convert_page,
     },
     signer::{PrepareTokenTransactionRequest, SparkSigner, TokenTransactionKind},
+    spark_primitives,
     token::{
         GetTokenOutputsFilter, MAX_TOKEN_EXTRA_METADATA_BYTES, ReservationPurpose,
         ReservationTarget, SelectionStrategy, TokenMetadata, TokenOutput, TokenOutputService,
